@@ -17,6 +17,7 @@ default_prepdir = tempfile.mkdtemp(prefix="resync-")
 
 ssh_socketfile = '/tmp/remarkable-push.socket'
 ssh_options="-o BatchMode=yes"
+ssh_socket_options = f" -S {ssh_socketfile}" if os.name != 'nt' else ""
 
 parser = argparse.ArgumentParser(description='Push and pull files to and from your reMarkable')
 
@@ -118,7 +119,7 @@ def get_metadata_by_uuid(u):
 	"""
 	retrieves metadata for a given document identified by its uuid
 	"""
-	raw_metadata = subprocess.getoutput(f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} "cat .local/share/remarkable/xochitl/{u}.metadata"')
+	raw_metadata = subprocess.getoutput(f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} "cat .local/share/remarkable/xochitl/{u}.metadata"')
 	try:
 		metadata = json.loads(raw_metadata)
 
@@ -138,7 +139,7 @@ def get_metadata_by_visibleName(name):
 	"""
 	retrieves metadata for all given documents that have the given name set as visibleName
 	"""
-	cmd = f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} "grep -lF \'\\"visibleName\\": \\"{name}\\"\' .local/share/remarkable/xochitl/*.metadata"'
+	cmd = f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} "grep -lF \'\\"visibleName\\": \\"{name}\\"\' .local/share/remarkable/xochitl/*.metadata"'
 	res = subprocess.getoutput(cmd)
 
 	reslist = []
@@ -299,7 +300,7 @@ class Node:
 			# documents don't have children, this one's easy
 			return
 
-		cmd = f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} "grep -lF \'\\"parent\\": \\"{self.id}\\"\' .local/share/remarkable/xochitl/*.metadata"'
+		cmd = f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} "grep -lF \'\\"parent\\": \\"{self.id}\\"\' .local/share/remarkable/xochitl/*.metadata"'
 		children_uuids = set([pathlib.Path(d).stem for d in subprocess.getoutput(cmd).split('\n')])
 		if '' in children_uuids:
 			# if we get an empty string here, there are no children to this folder
@@ -429,7 +430,7 @@ def get_toplevel_files():
 	get a list of all documents in the toplevel My files drawer
 	"""
 
-	cmd = f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} "grep -lF \'\\"parent\\": \\"\\"\' .local/share/remarkable/xochitl/*.metadata"'
+	cmd = f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} "grep -lF \'\\"parent\\": \\"\\"\' .local/share/remarkable/xochitl/*.metadata"'
 	toplevel_candidates = set([pathlib.Path(d).stem for d in subprocess.getoutput(cmd).split('\n')])
 
 	toplevel_files = []
@@ -499,7 +500,8 @@ def push_to_remarkable(documents, destination=None):
 			node = Folder(path.name, parent=parent)
 			for f in os.listdir(path):
 				child = construct_node_tree_from_disk(path/f, parent=node)
-				node.add_child(child)
+				if child:
+					node.add_child(child)
 
 		elif path.is_file() and path.suffix.lower() in ['.pdf', '.epub']:
 			node = Document(path, parent=parent)
@@ -519,7 +521,8 @@ def push_to_remarkable(documents, destination=None):
 						# we simply switch out the render function of this node to a simple document copy
 						# might mess with xochitl's thumbnail-generation and other things, but overall seems to be fine
 						node.render = type(node.render)(lambda self, prepdir: shutil.copy(self.doc, f'{prepdir}/{self.id}.{self.filetype}'), node)
-
+		else:
+			return None
 		return node
 
 
@@ -603,7 +606,7 @@ def push_to_remarkable(documents, destination=None):
 			r.render(args.prepdir)
 
 		subprocess.call(f'scp {ssh_options} -r {args.prepdir}/* root@{args.ssh_destination}:.local/share/remarkable/xochitl', shell=True)
-		subprocess.call(f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} systemctl restart xochitl', shell=True)
+		subprocess.call(f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} systemctl restart xochitl', shell=True)
 
 
 def pull_from_remarkable(documents, destination=None):
@@ -644,10 +647,10 @@ def pull_from_remarkable(documents, destination=None):
 
 ssh_connection = None
 try:
-	ssh_connection = subprocess.Popen(f'ssh -o ConnectTimeout=1 -M -N -q -S {ssh_socketfile} root@{args.ssh_destination}', shell=True)
+	ssh_connection = subprocess.Popen(f'ssh -o ConnectTimeout=1 -M -N -q {ssh_socket_options} root@{args.ssh_destination}', shell=True)
 
 	# quickly check if we actually have a functional ssh connection (might not be the case right after an update)
-	p = subprocess.Popen(f'ssh {ssh_options} -S {ssh_socketfile} root@{args.ssh_destination} "/bin/true"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+	p = subprocess.Popen(f'ssh {ssh_options} {ssh_socket_options} root@{args.ssh_destination} "/bin/true"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 	p.wait()
 	if p.returncode != 0:
 		stdout, stderr = p.communicate()
